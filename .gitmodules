@@ -1,0 +1,3 @@
+[submodule "addon-common"]
+	path = addon-common
+	url = https://github.com/CGCookie/addon-common.git
