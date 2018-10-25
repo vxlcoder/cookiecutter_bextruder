@@ -53,7 +53,7 @@ class VIEW3D_PT_tools_bextruder(Panel):
 
 
 
-@PersistentOptions(filename='bextruder.opts', version='2')
+@PersistentOptions()
 class BExtruderOptions:
     defaults = {
         'by': 'count',
