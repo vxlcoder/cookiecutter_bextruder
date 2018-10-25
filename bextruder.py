@@ -19,6 +19,7 @@ Created by Jonathan Denning
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 
+import os
 import math
 import time
 
@@ -35,6 +36,7 @@ from .addon_common.common import ui
 from .addon_common.common.bmesh_render import bmeshShader, BMeshRender, glDrawBMFaces, glDrawBMEdges, glDrawBMVerts
 from .addon_common.common.bmesh_utils import BMeshSelectState, BMeshHideState
 from .addon_common.common.maths import Point, Point2D
+from .addon_common.common.decorators import PersistentOptions
 
 
 class VIEW3D_PT_tools_bextruder(Panel):
@@ -48,6 +50,17 @@ class VIEW3D_PT_tools_bextruder(Panel):
     def draw(self, context):
         row = self.layout.row()
         row.operator('cgcookie.bextruder')
+
+
+
+@PersistentOptions(filename='bextruder.opts', version='2')
+class BExtruderOptions:
+    defaults = {
+        'by': 'count',
+        'count': 5,
+        'length': 0.5,
+        'position': 9,
+    }
 
 
 class VIEW3D_OT_bextruder(CookieCutter):
@@ -78,9 +91,10 @@ class VIEW3D_OT_bextruder(CookieCutter):
         self.header_text_set('BExtruder')
         self.cursor_modal_set('CROSSHAIR')
 
-        self.segment_count = 5
-        self.segment_length = 0.2
-        self.segment_by = 'count'
+        self.segment_opts = BExtruderOptions()
+        # self.segment_count = 5
+        # self.segment_length = 0.2
+        # self.segment_by = 'count'
         self.segments = 1
         self.is_dirty = True
         self.dirty_time = 0
@@ -89,6 +103,7 @@ class VIEW3D_OT_bextruder(CookieCutter):
         self.extrude_edges = []
         self.extrude_sides = []
         self.extrude_faces = []
+        self.join_verts = {}
 
         # collect working data
         self.obj = self.context.edit_object
@@ -121,22 +136,29 @@ class VIEW3D_OT_bextruder(CookieCutter):
         def set_dist(v):
             self.extrude_dist = float(v)
             self.is_dirty = True
-        def get_segcount(): return self.segment_count
+        def get_segcount(): return self.segment_opts['count']
         def set_segcount(v):
-            self.segment_count = max(1, int(v))
-            self.segment_by = 'count'
+            self.segment_opts['count'] = max(1, int(v))
+            self.segment_opts['by'] = 'count'
             self.is_dirty = True
-        def get_seglen(): return self.segment_length
-        def get_seglen_print(): return '%0.3f' % self.segment_length
+        def get_seglen(): return self.segment_opts['length']
+        def get_seglen_print(): return '%0.3f' % self.segment_opts['length']
         def set_seglen(v):
-            self.segment_length = max(0.001, float(v))
-            self.segment_by = 'length'
+            self.segment_opts['length'] = max(0.001, float(v))
+            self.segment_opts['by'] = 'length'
             self.is_dirty = True
-        def get_segby(): return self.segment_by
+        def get_segby(): return self.segment_opts['by']
         def set_segby(v):
-            self.segment_by = v.lower()
+            self.segment_opts['by'] = v.lower()
             self.is_dirty = True
-        self.win = self.wm.create_window('BExtruder', {'pos':8, 'movable':True})
+        def fn_get_pos_wrap(v):
+            if type(v) is int: return v
+            return Point2D(v)
+        def fn_set_pos_wrap(v):
+            if type(v) is int: return v
+            return tuple(v)
+        fn_pos = self.segment_opts.gettersetter('position', fn_get_wrap=fn_get_pos_wrap, fn_set_wrap=fn_set_pos_wrap)
+        self.win = self.wm.create_window('BExtruder', {'fn_pos':fn_pos, 'movable':True})
         self.win.add(ui.UI_Number('Distance', get_dist, set_dist, fn_get_print_value=get_dist_print, fn_set_print_value=set_dist))
         ui_segments = self.win.add(ui.UI_Frame('Segments'))
         ui_segments.add(ui.UI_Number('Count', get_segcount, set_segcount))
@@ -155,7 +177,9 @@ class VIEW3D_OT_bextruder(CookieCutter):
         for bmv in self.inner_verts: self.bmesh.verts.remove(bmv)
 
         # create new geometry
-        lbmv = [ self.bmesh.verts.new(v) for v in self.extrude_verts ]
+        def get_bmv(i, v):
+            return self.join_verts[i] if i in self.join_verts else self.bmesh.verts.new(v)
+        lbmv = [ get_bmv(i, v) for (i, v) in enumerate(self.extrude_verts) ]
         lbmf = [ self.bmesh.faces.new([lbmv[i_v] for i_v in liv]) for liv in self.extrude_sides ]
         lbmf += [ self.bmesh.faces.new([lbmv[i_v] for i_v in liv]) for liv in self.extrude_faces ]
         for bmf in lbmf:
@@ -183,11 +207,12 @@ class VIEW3D_OT_bextruder(CookieCutter):
 
     def update(self):
         ''' Check if we need to update any internal data structures '''
+        self.segment_opts.clean()
         if not self.is_dirty: return
 
         # recompute
         self.is_dirty = False
-        n = self.segment_count if self.segment_by == 'count' else math.floor(self.extrude_dist / self.segment_length)
+        n = self.segment_opts['count'] if self.segment_opts['by'] == 'count' else math.floor(self.extrude_dist / self.segment_opts['length'])
         n = max(1, min(n, 100))
         v = self.extrude_dir * self.extrude_dist
         l = len(self.outer_verts) * (n + 1)
@@ -204,6 +229,9 @@ class VIEW3D_OT_bextruder(CookieCutter):
             bmv.co + v
             for bmv in self.inner_verts
         ]
+        self.join_verts = {
+            (i * (n + 1)):bmv for i,bmv in enumerate(self.outer_verts)
+        }
         self.extrude_edges = [
             tuple(m(bmv) + r for bmv in bme.verts)
             for bme in self.outer_edges
@@ -269,7 +297,7 @@ class VIEW3D_OT_bextruder(CookieCutter):
             off = self.extrude_dir.dot(p - self.mousedown_p)
             self.extrude_dist = self.mousedown_dist + off
             if self.actions.ctrl:
-                self.extrude_dist = math.ceil(self.extrude_dist / self.segment_length) * self.segment_length
+                self.extrude_dist = math.ceil(self.extrude_dist / self.segment_opts['length']) * self.segment_opts['length']
             self.is_dirty = True
 
     @CookieCutter.Draw('post3d')
