@@ -33,13 +33,32 @@ bl_info = {
 }
 
 from bpy.utils import register_class, unregister_class
+from bpy.types import Panel
 
-from .bextruder import VIEW3D_OT_bextruder, VIEW3D_PT_tools_bextruder
+from .bextruder import VIEW3D_OT_bextruder
+from .bextruder2 import VIEW3D_OT_bextruder2
+
+
+class VIEW3D_PT_tools_bextruder(Panel):
+    ''' Creates a panel in the Tools panel '''
+    bl_label       = 'BExtruder'
+    bl_category    = 'Tools'
+    bl_space_type  = 'VIEW_3D'
+    bl_region_type = 'TOOLS'
+    bl_context     = 'mesh_edit'
+
+    def draw(self, context):
+        row = self.layout.row()
+        row.operator('cgcookie.bextruder')
+        row.operator('cgcookie.bextruder2')
+
 
 def register():
     register_class(VIEW3D_OT_bextruder)
+    register_class(VIEW3D_OT_bextruder2)
     register_class(VIEW3D_PT_tools_bextruder)
 
 def unregister():
     unregister_class(VIEW3D_PT_tools_bextruder)
+    unregister_class(VIEW3D_OT_bextruder2)
     unregister_class(VIEW3D_OT_bextruder)

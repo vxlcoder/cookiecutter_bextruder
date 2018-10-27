@@ -26,32 +26,31 @@ import time
 import bgl
 import bpy
 import bmesh
-from bpy.types import Panel
 from mathutils import Vector
 from mathutils.geometry import intersect_line_line
 from bmesh.types import BMVert, BMEdge, BMFace
 
 from .addon_common.cookiecutter.cookiecutter import CookieCutter
 from .addon_common.common import ui
-from .addon_common.common.bmesh_render import bmeshShader, BMeshRender, glDrawBMFaces, glDrawBMEdges, glDrawBMVerts
 from .addon_common.common.bmesh_utils import BMeshSelectState, BMeshHideState
-from .addon_common.common.maths import Point, Point2D
+from .addon_common.common.maths import Point, Point2D, XForm
 from .addon_common.common.decorators import PersistentOptions
 
 
-class VIEW3D_PT_tools_bextruder(Panel):
-    ''' Creates a panel in the Tools panel '''
-    bl_label       = 'BExtruder'
-    bl_category    = 'Tools'
-    bl_space_type  = 'VIEW_3D'
-    bl_region_type = 'TOOLS'
-    bl_context     = 'mesh_edit'
 
-    def draw(self, context):
-        row = self.layout.row()
-        row.operator('cgcookie.bextruder')
+'''
 
+ +---+---+---+---+                       +-----------+
+ |   |   |   |   |                       | \       / |
+ +---X===X---+---+       +---+           |   +---+   +---+
+ |   $   $   |   |       |   |           |   |   | /   / |
+ +---X===X===X---+  ==>  +---+---+  ==>  +---+---+---+   |
+ |   $   $   $   |       |   |   |       |   |   |   |   |
+ +---X===X===X---+       +---+---+       |   +---+---+   |
+ |   |   |   |   |                       | /     |     \ |
+ +---+---+---+---+                       +-------+-------+
 
+'''
 
 @PersistentOptions()
 class BExtruderOptions:
@@ -66,14 +65,12 @@ class BExtruderOptions:
 class VIEW3D_OT_bextruder(CookieCutter):
     bl_idname      = 'cgcookie.bextruder'
     bl_label       = 'BExtruder'
-    bl_description = 'Simple but better tool for extruding faces'
+    bl_description = 'Extrude + Loop Cut'
     bl_space_type  = 'VIEW_3D'
     bl_region_type = 'TOOLS'
-    #https://docs.blender.org/api/current/bpy.types.Operator.html#bpy.types.Operator.bl_options
-    bl_options     = {'REGISTER', 'UNDO'}
 
     default_keymap = {
-        'extrude displace': {'LEFTMOUSE','CTRL+LEFTMOUSE'},
+        'displace': {'LEFTMOUSE','CTRL+LEFTMOUSE'},
         'commit': {'RET',},
         'cancel': {'RIGHTMOUSE', 'ESC'},
     }
@@ -82,19 +79,18 @@ class VIEW3D_OT_bextruder(CookieCutter):
     def can_start(cls, context):
         ''' Start only if editing a mesh '''
         ob = context.active_object
-        return(ob and ob.type == 'MESH' and context.mode == 'EDIT_MESH')
+        return (ob and ob.type == 'MESH' and context.mode == 'EDIT_MESH')
 
     def start(self):
         ''' BExtruder tool is starting '''
-        bpy.ops.ed.undo_push()
+
+        bpy.ops.ed.undo_push()  # push current state to undo
 
         self.header_text_set('BExtruder')
         self.cursor_modal_set('CROSSHAIR')
+        self.manipulator_hide()
 
         self.segment_opts = BExtruderOptions()
-        # self.segment_count = 5
-        # self.segment_length = 0.2
-        # self.segment_by = 'count'
         self.segments = 1
         self.is_dirty = True
         self.dirty_time = 0
@@ -109,21 +105,20 @@ class VIEW3D_OT_bextruder(CookieCutter):
         self.obj = self.context.edit_object
         self.emesh = self.obj.data
         self.bmesh = bmesh.from_edit_mesh(self.emesh)
-        self.selection = BMeshSelectState(self.bmesh)
+        self.xform = XForm(self.obj.matrix_world)
         self.hidden    = BMeshHideState(self.bmesh)
         # get all faces, edges, and verts involved in extrusion
         self.all_faces = { f for f in self.bmesh.faces if f.select }
         self.all_edges = { e for f in self.all_faces for e in f.edges }
         self.all_verts = { v for f in self.all_faces for v in f.verts }
         # get inner edges and verts
-        self.inner_edges = { e for e in self.all_edges if all(f in self.all_faces for f in e.link_faces) }
-        self.inner_verts = { v for v in self.all_verts if all(f in self.all_faces for f in v.link_faces) }
-        self.outer_edges = { e for e in self.all_edges if e not in self.inner_edges }
-        self.outer_verts = { v for v in self.all_verts if v not in self.inner_verts }
+        self.inner_edges = { e for e in self.all_edges if len(e.link_faces) > 1 and all(f in self.all_faces for f in e.link_faces) }
+        self.outer_edges = self.all_edges - self.inner_edges
+        self.outer_verts = { v for e in self.outer_edges for v in e.verts}
+        self.inner_verts = self.all_verts - self.outer_verts
         # hide extruded geometry
         for g in self.all_faces | self.inner_edges | self.inner_verts:
             g.hide = True
-            g.select = False
         # compute an extrusion direction
         self.extrude_dir = sum((f.normal for f in self.all_faces), Vector((0,0,0))).normalized()
         self.extrude_pt0 = sum((v.co for v in self.all_verts), Vector((0,0,0))) / len(self.all_verts)
@@ -132,7 +127,7 @@ class VIEW3D_OT_bextruder(CookieCutter):
         self.last_view = None
 
         def get_dist(): return self.extrude_dist
-        def get_dist_print(): return '%0.6f' % self.extrude_dist
+        def get_dist_print(): return '%0.4f' % self.extrude_dist
         def set_dist(v):
             self.extrude_dist = float(v)
             self.is_dirty = True
@@ -158,9 +153,9 @@ class VIEW3D_OT_bextruder(CookieCutter):
             if type(v) is int: return v
             return tuple(v)
         fn_pos = self.segment_opts.gettersetter('position', fn_get_wrap=fn_get_pos_wrap, fn_set_wrap=fn_set_pos_wrap)
-        self.win = self.wm.create_window('BExtruder', {'fn_pos':fn_pos, 'movable':True})
-        self.win.add(ui.UI_Number('Distance', get_dist, set_dist, fn_get_print_value=get_dist_print, fn_set_print_value=set_dist))
-        ui_segments = self.win.add(ui.UI_Frame('Segments'))
+        win = self.wm.create_window('BExtruder', {'fn_pos':fn_pos, 'movable':True})
+        win.add(ui.UI_Number('Displace', get_dist, set_dist, fn_get_print_value=get_dist_print, fn_set_print_value=set_dist))
+        ui_segments = win.add(ui.UI_Frame('Segments'))
         ui_segments.add(ui.UI_Number('Count', get_segcount, set_segcount))
         ui_segments.add(ui.UI_Number('Length', get_seglen, set_seglen, fn_get_print_value=get_seglen_print, fn_set_print_value=set_seglen))
         segby = ui_segments.add(ui.UI_Options(get_segby, set_segby, label='By: ', vertical=False))
@@ -197,11 +192,11 @@ class VIEW3D_OT_bextruder(CookieCutter):
 
     def end_cancel(self):
         ''' Cancel changes '''
-        self.hidden.restore()
-        self.selection.restore()
+        bpy.ops.ed.undo()   # undo geometry hide
 
     def end(self):
         ''' Restore everything, because we're done '''
+        self.manipulator_restore()
         self.header_text_restore()
         self.cursor_modal_restore()
 
@@ -265,8 +260,8 @@ class VIEW3D_OT_bextruder(CookieCutter):
             self.done(cancel=True)
             return
 
-        if self.actions.pressed('extrude displace'):
-            return 'move extrude'
+        if self.actions.pressed('displace'):
+            return 'displace'
 
     def closest_extrude_Point(self, p2D : Point2D) -> Point:
         r = self.drawing.Point2D_to_Ray(p2D)
@@ -276,20 +271,20 @@ class VIEW3D_OT_bextruder(CookieCutter):
             )
         return Point(p)
 
-    @CookieCutter.FSM_State('move extrude', 'enter')
-    def modal_enter_moveextrude(self):
+    @CookieCutter.FSM_State('displace', 'enter')
+    def modal_enter_displace(self):
         self.mousedown_p = self.closest_extrude_Point(self.actions.mouse)
         self.mousedown_dist = self.extrude_dist
-        self.mousedown_time = time.time()
 
-    @CookieCutter.FSM_State('move extrude')
-    def modal_moveextrude(self):
+    @CookieCutter.FSM_State('displace')
+    def modal_displace(self):
         self.cursor_modal_set('HAND')
 
-        if self.actions.released('extrude displace'):
+        if self.actions.released('displace'):
             return 'main'
         if self.actions.pressed('cancel'):
             self.extrude_dist = self.mousedown_dist
+            self.is_dirty = True
             return 'main'
 
         if self.actions.mousemove:
@@ -300,21 +295,25 @@ class VIEW3D_OT_bextruder(CookieCutter):
                 self.extrude_dist = math.ceil(self.extrude_dist / self.segment_opts['length']) * self.segment_opts['length']
             self.is_dirty = True
 
+    def glVertex(self, p : Point):
+        bgl.glVertex3f(*self.xform.l2w_point(p))
+
     @CookieCutter.Draw('post3d')
     def draw_postview(self):
         if self.extrude_dist is None: return
 
+        glv = self.glVertex
         bgl.glEnable(bgl.GL_BLEND)
 
         # draw extrusion line
         self.drawing.line_width(1.0)
         bgl.glBegin(bgl.GL_LINES)
         bgl.glColor4f(1.0, 0.0, 1.0, 0.25)
-        bgl.glVertex3f(*(self.extrude_pt0 - self.extrude_dir*1000))
-        bgl.glVertex3f(*self.extrude_pt0)
+        glv(self.extrude_pt0 - self.extrude_dir*1000)
+        glv(self.extrude_pt0)
         bgl.glColor4f(0.0, 1.0, 1.0, 0.25)
-        bgl.glVertex3f(*self.extrude_pt0)
-        bgl.glVertex3f(*(self.extrude_pt0 + self.extrude_dir*1000))
+        glv(self.extrude_pt0)
+        glv(self.extrude_pt0 + self.extrude_dir*1000)
         bgl.glEnd()
 
         # draw new geometry: points
@@ -323,7 +322,7 @@ class VIEW3D_OT_bextruder(CookieCutter):
         bgl.glBegin(bgl.GL_POINTS)
         bgl.glColor4f(0.0, 0.2, 0.1, 1.0)
         for v in self.extrude_verts:
-            bgl.glVertex3f(*v)
+            glv(v)
         bgl.glEnd()
         bgl.glDepthRange(0, 1)
 
@@ -333,8 +332,8 @@ class VIEW3D_OT_bextruder(CookieCutter):
         bgl.glBegin(bgl.GL_LINES)
         bgl.glColor4f(0.0, 0.2, 0.1, 1.0)
         for (iv0,iv1) in self.extrude_edges:
-            bgl.glVertex3f(*self.extrude_verts[iv0])
-            bgl.glVertex3f(*self.extrude_verts[iv1])
+            glv(self.extrude_verts[iv0])
+            glv(self.extrude_verts[iv1])
         bgl.glEnd()
         bgl.glDepthRange(0, 1)
 
@@ -345,16 +344,16 @@ class VIEW3D_OT_bextruder(CookieCutter):
         for liv in self.extrude_faces:
             iv0 = liv[0]
             for iv1,iv2 in zip(liv[1:-1], liv[2:]):
-                bgl.glVertex3f(*self.extrude_verts[iv0])
-                bgl.glVertex3f(*self.extrude_verts[iv1])
-                bgl.glVertex3f(*self.extrude_verts[iv2])
+                glv(self.extrude_verts[iv0])
+                glv(self.extrude_verts[iv1])
+                glv(self.extrude_verts[iv2])
         bgl.glColor4f(0.5, 0.6, 0.5, 0.8)
         for liv in self.extrude_sides:
             iv0 = liv[0]
             for iv1,iv2 in zip(liv[1:-1], liv[2:]):
-                bgl.glVertex3f(*self.extrude_verts[iv0])
-                bgl.glVertex3f(*self.extrude_verts[iv1])
-                bgl.glVertex3f(*self.extrude_verts[iv2])
+                glv(self.extrude_verts[iv0])
+                glv(self.extrude_verts[iv1])
+                glv(self.extrude_verts[iv2])
         bgl.glEnd()
 
         bgl.glDisable(bgl.GL_BLEND)
