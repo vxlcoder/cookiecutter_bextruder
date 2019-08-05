@@ -20,10 +20,6 @@ git init .
 
 # add CC addon_common as submodule
 git submodule add git@github.com:CGCookie/addon_common.git addon_common
-
-# update CC addon_common
-cd addon_common
-git pull
 ```
 
 ## Creating a Blender 2.80 add-on using CookieCutter
@@ -42,7 +38,11 @@ git init .
 git submodule add git@github.com:CGCookie/addon_common.git addon_common
 cd addon_common
 git checkout b280
+```
 
+## Updating CookieCutter
+
+```
 # update CC addon_common
 cd addon_common
 git pull
