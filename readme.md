@@ -18,12 +18,33 @@ cd newaddon
 # initialize as new git repo
 git init .
 
-# add CC addon-common as submodule
-git submodule add git@github.com:CGCookie/addon-common.git addon-common
-ln -s addon-common addon_common
+# add CC addon_common as submodule
+git submodule add git@github.com:CGCookie/addon_common.git addon_common
 
-# update CC addon-common
-cd addon-common
+# update CC addon_common
+cd addon_common
+git pull
+```
+
+## Creating a Blender 2.80 add-on using CookieCutter
+
+Until CookieCutter is ready for Blender 2.79b and 2.80, development for Blender 2.80 is under the `b280` branch of CookieCutter.
+
+```
+# create new addon folder
+mkdir newaddon
+cd newaddon
+
+# initialize as new git repo
+git init .
+
+# add CC addon_common as submodule
+git submodule add git@github.com:CGCookie/addon_common.git addon_common
+cd addon_common
+git checkout b280
+
+# update CC addon_common
+cd addon_common
 git pull
 ```
 
